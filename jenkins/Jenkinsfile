@@ -1,0 +1,144 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_ACCESS_KEY_ID = credentials('aws_access_key_id')
+        AWS_SECRET_ACCESS_KEY = credentials('aws_secret_access_key')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.STAGE = "${env.GIT_BRANCH.replace('origin/', '')}"
+                }
+            }
+        }
+
+        stage('Terraform Fmt') {
+            steps {
+                script {
+                    terraformFmt()
+                }
+            }
+        }
+
+        stage('Terraform Validate') {
+            steps {
+                script {
+                    terraformValidate()
+                }
+            }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                script {
+                    terraformInit(env.STAGE)
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                script {
+                    terraformPlan(env.STAGE)
+                }
+            }
+        }
+
+        stage('Review and Approval') {
+            steps {
+                script {
+                    input message: "Review and approve the Terraform plan for ${env.STAGE}. Proceed with apply?", ok: "Apply"
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                script {
+                    terraformApply(env.STAGE)
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            emailext (
+                subject: "Jenkins Job ${currentBuild.fullDisplayName}",
+                body: """<p>Jenkins Job: ${currentBuild.fullDisplayName}</p>
+                         <p>Result: ${currentBuild.currentResult}</p>
+                         <p>Check console output at ${env.BUILD_URL}</p>""",
+                recipientProviders: [[$class: 'DevelopersRecipientProvider'], [$class: 'RequesterRecipientProvider']]
+            )
+        }
+        success {
+            emailext (
+                subject: "Jenkins Job ${currentBuild.fullDisplayName} - SUCCESS",
+                body: """<p>Jenkins Job: ${currentBuild.fullDisplayName} was successful.</p>
+                         <p>Check console output at ${env.BUILD_URL}</p>""",
+                recipientProviders: [[$class: 'DevelopersRecipientProvider'], [$class: 'RequesterRecipientProvider']]
+            )
+        }
+        failure {
+            emailext (
+                subject: "Jenkins Job ${currentBuild.fullDisplayName} - FAILURE",
+                body: """<p>Jenkins Job: ${currentBuild.fullDisplayName} has failed.</p>
+                         <p>Check console output at ${env.BUILD_URL}</p>""",
+                recipientProviders: [[$class: 'DevelopersRecipientProvider'], [$class: 'RequesterRecipientProvider']]
+            )
+        }
+        unstable {
+            emailext (
+                subject: "Jenkins Job ${currentBuild.fullDisplayName} - UNSTABLE",
+                body: """<p>Jenkins Job: ${currentBuild.fullDisplayName} is unstable.</p>
+                         <p>Check console output at ${env.BUILD_URL}</p>""",
+                recipientProviders: [[$class: 'DevelopersRecipientProvider'], [$class: 'RequesterRecipientProvider']]
+            )
+        }
+    }
+}
+
+def terraformFmt() {
+    script {
+        dir('terraform') {
+            sh 'terraform fmt -check'
+        }
+    }
+}
+
+def terraformValidate() {
+    script {
+        dir('terraform') {
+            sh 'terraform validate'
+        }
+    }
+}
+
+def terraformInit(String stage) {
+    script {
+        dir('terraform') {
+            sh "terraform workspace select ${stage} || terraform workspace new ${stage}"
+            sh 'terraform init'
+        }
+    }
+}
+
+def terraformPlan(String stage) {
+    script {
+        dir('terraform') {
+            sh "terraform plan -var-file=vars/${stage}/${stage}.tfvars"
+        }
+    }
+}
+
+def terraformApply(String stage) {
+    script {
+        dir('terraform') {
+            sh "terraform apply -var-file=vars/${stage}/${stage}.tfvars -auto-approve"
+        }
+    }
+}
